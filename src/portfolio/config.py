@@ -14,8 +14,9 @@ METRICS_DIR = DATA_DIR / "metrics"
 IMPORTS_DIR = DATA_DIR / "imports"
 LOGS_DIR = DATA_DIR / "logs"
 
-# Schwab OAuth token file (outside repo, chmod 600)
-TOKENS_FILE = SECRETS_DIR / ".schwab_tokens.json"
+# Schwab OAuth token DB (outside repo, chmod 600)
+# schwabdev stores tokens in a SQLite database
+TOKENS_FILE = SECRETS_DIR / ".schwab_tokens.db"
 
 # ---------------------------------------------------------------------------
 # Schwab OAuth endpoints

@@ -20,6 +20,7 @@ The Flask server:
 
 import json
 import logging
+import sqlite3
 import threading
 import time
 import webbrowser
@@ -170,22 +171,82 @@ def refresh_access_token(tokens: dict) -> dict:
 
 
 def _save_tokens(tokens: dict) -> None:
-    """Persist tokens to secure file and record creation timestamp in Keychain."""
+    """Persist tokens to secure SQLite DB (schwabdev-compatible schema)."""
     config.SECRETS_DIR.mkdir(parents=True, exist_ok=True)
-    config.TOKENS_FILE.write_text(json.dumps(tokens, indent=2))
+
+    now_str = datetime.now(timezone.utc).isoformat()
+
+    con = sqlite3.connect(str(config.TOKENS_FILE))
+    try:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS schwabdev (
+                access_token_issued  TEXT,
+                refresh_token_issued TEXT,
+                access_token         TEXT,
+                refresh_token        TEXT,
+                id_token             TEXT,
+                expires_in           INTEGER,
+                token_type           TEXT,
+                scope                TEXT
+            )
+        """)
+        con.execute("DELETE FROM schwabdev")   # keep exactly one row
+        con.execute(
+            "INSERT INTO schwabdev VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                now_str,
+                now_str,
+                tokens.get("access_token", ""),
+                tokens.get("refresh_token", ""),
+                tokens.get("id_token", ""),
+                tokens.get("expires_in", 1800),
+                tokens.get("token_type", "Bearer"),
+                tokens.get("scope", ""),
+            ),
+        )
+        con.commit()
+    finally:
+        con.close()
+
     config.TOKENS_FILE.chmod(0o600)
-    keychain.set("schwab-token-created-at", datetime.now(timezone.utc).isoformat())
+    keychain.set("schwab-token-created-at", now_str)
     log.info("Tokens saved to %s", config.TOKENS_FILE)
 
 
 def load_tokens() -> dict | None:
-    """Load tokens from the secure file. Returns None if not found."""
+    """Load tokens from the secure SQLite DB. Returns None if not found."""
     if not config.TOKENS_FILE.exists():
         return None
     try:
-        return json.loads(config.TOKENS_FILE.read_text())
-    except (json.JSONDecodeError, OSError):
+        con = sqlite3.connect(str(config.TOKENS_FILE))
+        con.row_factory = sqlite3.Row
+        try:
+            row = con.execute("SELECT * FROM schwabdev LIMIT 1").fetchone()
+            return dict(row) if row else None
+        finally:
+            con.close()
+    except sqlite3.Error:
         return None
+
+
+def _maybe_migrate_tokens() -> None:
+    """Migrate old JSON tokens (.schwab_tokens.json) to new SQLite format (.db).
+
+    Called once from create_client() — silently does nothing if there is nothing
+    to migrate (SQLite DB already exists or no old JSON file is present).
+    """
+    if config.TOKENS_FILE.exists():
+        return  # SQLite DB already present; nothing to do
+    json_file = config.SECRETS_DIR / ".schwab_tokens.json"
+    if not json_file.exists():
+        return  # No old file either
+    try:
+        tokens = json.loads(json_file.read_text())
+        _save_tokens(tokens)
+        json_file.rename(json_file.with_suffix(".bak"))
+        log.info("Migrated Schwab tokens from JSON to SQLite format")
+    except Exception as exc:
+        log.warning("Failed to migrate JSON tokens to SQLite: %s", exc)
 
 
 def token_days_remaining() -> float | None:
@@ -292,15 +353,18 @@ def start_auth_server(open_browser: bool = True) -> None:
 def create_client() -> schwabdev.Client:
     """Create an authenticated schwabdev.Client.
 
-    Loads tokens from the secure file (~/.portfolio/.schwab_tokens.json).
+    Loads tokens from the secure SQLite DB (~/.portfolio/.schwab_tokens.db).
     schwabdev auto-refreshes the access token (30-min expiry) and writes
-    the updated token back to the file.
+    the updated token back to the database.
     """
     if not keychain.is_configured():
         raise RuntimeError(
             "Schwab credentials not in Keychain.\n"
             "Run: portfolio setup"
         )
+
+    # Transparently migrate old JSON tokens to SQLite on first run after upgrade
+    _maybe_migrate_tokens()
 
     if not config.TOKENS_FILE.exists():
         raise RuntimeError(
@@ -325,5 +389,5 @@ def create_client() -> schwabdev.Client:
         app_key,
         app_secret,
         callback_url,
-        tokens_file=str(config.TOKENS_FILE),
+        tokens_db=str(config.TOKENS_FILE),
     )
