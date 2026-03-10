@@ -1,0 +1,40 @@
+[project]
+name = "portfolio"
+version = "0.1.0"
+description = "Personal investment portfolio aggregation and analytics dashboard"
+requires-python = ">=3.11"
+dependencies = [
+    "schwabdev>=1.0",
+    "pandas>=2.0",
+    "pyarrow>=14.0",
+    "duckdb>=0.9",
+    "streamlit>=1.30",
+    "plotly>=5.18",
+    "keyring>=25.0",
+    "yfinance>=0.2",
+    "pygsheets>=2.0",
+    "flask>=3.0",
+    "httpx>=0.25",
+    "numpy>=1.26",
+]
+
+[project.optional-dependencies]
+plaid = ["plaid-python>=20.0"]
+dev = ["pytest>=7.0", "pytest-cov", "ruff"]
+
+[project.scripts]
+portfolio = "portfolio.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
