@@ -40,7 +40,7 @@ def get_linked_accounts(client) -> list[dict]:
     Each dict: {account_no, hash_value, account_type, description}
     Dynamic discovery – no hardcoded account numbers.
     """
-    linked = client.account_linked().json()
+    linked = client.linked_accounts().json()
     accounts = []
     for acct in linked:
         accounts.append({
@@ -337,6 +337,13 @@ def enrich_fundamentals(client, df: pd.DataFrame) -> pd.DataFrame:
 # Transaction history
 # ---------------------------------------------------------------------------
 
+# Transaction types to fetch (comma-separated string for Schwab API)
+_TX_TYPES = (
+    "TRADE,RECEIVE_AND_DELIVER,DIVIDEND_OR_INTEREST,"
+    "ACH_RECEIPT,ACH_DISBURSEMENT,CASH_RECEIPT,CASH_DISBURSEMENT"
+)
+
+
 def fetch_transactions(client, accounts: list[dict],
                         start_date: date | None = None,
                         end_date: date | None = None) -> pd.DataFrame:
@@ -349,10 +356,11 @@ def fetch_transactions(client, accounts: list[dict],
     rows = []
     for acct in accounts:
         try:
-            resp = client.account_transactions(
+            resp = client.transactions(
                 acct["hash_value"],
-                start_datetime=datetime.combine(start_date, datetime.min.time()),
-                end_datetime=datetime.combine(end_date, datetime.max.time()),
+                startDate=datetime.combine(start_date, datetime.min.time()),
+                endDate=datetime.combine(end_date, datetime.max.time()),
+                types=_TX_TYPES,
             )
             if resp.status_code != 200:
                 log.warning("Transactions failed for account %s: %s",
