@@ -87,8 +87,8 @@ def fetch_account_balances(client, accounts: list[dict]) -> pd.DataFrame:
             })
 
     df = pd.DataFrame(rows)
-    log.info("Fetched balances for %d accounts (total: $%,.0f)",
-             len(df), df["liquidation_value"].sum() if not df.empty else 0)
+    total = df["liquidation_value"].sum() if not df.empty else 0
+    log.info("Fetched balances for %d accounts (total: $%s)", len(df), f"{total:,.0f}")
     return df
 
 
@@ -226,8 +226,8 @@ def consolidate_positions(df: pd.DataFrame) -> pd.DataFrame:
     total_value = grp["market_value"].sum()
     grp["portfolio_pct"] = grp["market_value"] / total_value if total_value else 0
 
-    log.info("Consolidated to %d unique positions (total value: $%,.0f)",
-             len(grp), total_value)
+    log.info("Consolidated to %d unique positions (total value: $%s)",
+             len(grp), f"{total_value:,.0f}")
     return grp
 
 
@@ -244,12 +244,21 @@ def enrich_sector_industry(df: pd.DataFrame) -> pd.DataFrame:
 
     for idx, row in df.iterrows():
         symbol = row["symbol"]
-        if symbol == "cashBalance":
+        sec_type = row.get("security_type", "")
+
+        # Cash — no yfinance call needed
+        if symbol == "cashBalance" or sec_type == "CASH":
             df.at[idx, "sector"] = "Cash"
             df.at[idx, "industry"] = "Cash"
             continue
 
-        sec_type = row.get("security_type", "")
+        # Bonds / fixed-income use CUSIP symbols (e.g., "06428PAM7") that
+        # yfinance cannot resolve. Skip them entirely.
+        if sec_type == "BOND" or (len(symbol) == 9 and symbol.isalnum()):
+            df.at[idx, "sector"] = "Bond"
+            df.at[idx, "industry"] = "Fixed Income"
+            continue
+
         try:
             ticker = yf.Ticker(symbol)
             info = ticker.info
@@ -321,7 +330,7 @@ def enrich_fundamentals(client, df: pd.DataFrame) -> pd.DataFrame:
         except Exception:
             log.warning("Fundamentals failed for %s", symbol)
 
-    df[FUNDAMENTAL_COLS] = df[FUNDAMENTAL_COLS].fillna(0)
+    df[FUNDAMENTAL_COLS] = df[FUNDAMENTAL_COLS].fillna(0).infer_objects(copy=False)
 
     # Derived columns (from cspull)
     total_value = df["market_value"].sum()
@@ -418,14 +427,16 @@ def pull_all(include_fundamentals: bool = True,
         consolidated = enrich_sector_industry(consolidated)
         if include_fundamentals:
             consolidated = enrich_fundamentals(client, consolidated)
-        # Merge enriched data back to per-account positions
-        enrich_cols = [c for c in consolidated.columns
-                       if c not in ("account_id", "account_name", "quantity",
-                                    "average_price", "market_value", "cost_basis")]
-        positions_df = positions_df.merge(
-            consolidated[["symbol"] + [c for c in enrich_cols if c in consolidated.columns]],
-            on="symbol", how="left", suffixes=("", "_enriched"),
-        )
+        # Merge enriched data back to per-account positions.
+        # Only bring over columns that don't already exist in positions_df,
+        # to avoid the "column label not unique" error on merge.
+        _existing = set(positions_df.columns)
+        enrich_cols = [c for c in consolidated.columns if c not in _existing]
+        if enrich_cols:
+            positions_df = positions_df.merge(
+                consolidated[["symbol"] + enrich_cols].drop_duplicates("symbol"),
+                on="symbol", how="left",
+            )
 
     transactions_df = fetch_transactions(client, accounts)
 
