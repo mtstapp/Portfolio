@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Daily data refresh at 4:30 PM ET (weekdays after market close).
+     Install: cp com.portfolio.refresh.plist ~/Library/LaunchAgents/
+              launchctl load -w ~/Library/LaunchAgents/com.portfolio.refresh.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.portfolio.refresh</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>-c</string>
+        <string>
+            source ~/.zshrc 2>/dev/null;
+            cd /Users/mark/dev/Portfolio;
+            .venv/bin/portfolio refresh >> ~/data/portfolio/logs/refresh.log 2>&1
+        </string>
+    </array>
+
+    <!-- 4:30 PM = 16:30 local time.
+         Adjust hour if Mac Mini is not in ET timezone:
+           PT: 13:30  MT: 14:30  CT: 15:30  ET: 16:30  -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>16</integer>
+        <key>Minute</key>
+        <integer>30</integer>
+    </dict>
+
+    <key>StandardOutPath</key>
+    <string>/Users/mark/data/portfolio/logs/refresh.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mark/data/portfolio/logs/refresh_error.log</string>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/Users/mark/.pyenv/shims:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>PYTHONPATH</key>
+        <string>/Users/mark/dev/Portfolio/src</string>
+    </dict>
+</dict>
+</plist>
