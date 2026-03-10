@@ -256,9 +256,6 @@ def start_auth_server(open_browser: bool = True) -> None:
     callback URL). Uses werkzeug's adhoc SSL cert – the browser will show a
     security warning for localhost which the user can dismiss.
     """
-    import os
-    os.environ["WERKZEUG_RUN_MAIN"] = "true"  # suppress reloader banner
-
     _auth_event.clear()
 
     url = f"https://{config.OAUTH_SERVER_HOST}:{config.OAUTH_SERVER_PORT}"
