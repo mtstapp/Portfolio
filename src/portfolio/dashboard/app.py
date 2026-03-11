@@ -8,7 +8,13 @@ multipage app convention (files prefixed with a number).
 """
 
 import subprocess
+import sys
 from datetime import timezone
+from pathlib import Path
+
+# Resolve the portfolio CLI to the same venv as the running Streamlit process,
+# so subprocess.run() works regardless of the shell's PATH.
+_PORTFOLIO = str(Path(sys.executable).parent / "portfolio")
 
 import streamlit as st
 
@@ -59,7 +65,7 @@ def render_sidebar() -> None:
             with st.spinner("Waiting for Schwab authentication…"):
                 try:
                     result = subprocess.run(
-                        ["portfolio", "auth", "--no-browser"],
+                        [_PORTFOLIO, "auth", "--no-browser"],
                         capture_output=True, text=True, timeout=180,
                     )
                     if result.returncode == 0:
@@ -84,7 +90,7 @@ def render_sidebar() -> None:
         if st.button("🔄 Refresh Data", use_container_width=True):
             with st.spinner("Refreshing Schwab data…"):
                 result = subprocess.run(
-                    ["portfolio", "refresh"],
+                    [_PORTFOLIO, "refresh"],
                     capture_output=True, text=True, timeout=600,
                 )
             if result.returncode == 0:
