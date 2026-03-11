@@ -12,6 +12,7 @@ RAW_DIR = DATA_DIR / "raw"
 CANONICAL_DIR = DATA_DIR / "canonical"
 METRICS_DIR = DATA_DIR / "metrics"
 IMPORTS_DIR = DATA_DIR / "imports"
+ML_BENEFITS_IMPORT_DIR = IMPORTS_DIR / "ml_benefits"
 LOGS_DIR = DATA_DIR / "logs"
 
 # Schwab OAuth token DB (outside repo, chmod 600)

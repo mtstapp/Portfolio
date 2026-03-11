@@ -10,7 +10,8 @@ Commands:
     portfolio refresh --force   Refresh even on weekends/holidays
     portfolio refresh --fast    Skip slow yfinance sector enrichment
     portfolio status            Show auth and data status
-    portfolio import ml-benefits <file>   Import ML Benefits CSV/Excel
+    portfolio import ml-benefits           Import latest file from ~/data/portfolio/imports/ml_benefits/
+    portfolio import ml-benefits <file>   Import a specific ML Benefits CSV/Excel
 """
 
 import logging
@@ -146,11 +147,11 @@ def _cmd_status() -> None:
 
 
 def _cmd_import_ml(args: list[str]) -> None:
-    """Import a Merrill Lynch Benefits 401k CSV file."""
-    if not args:
-        print("Usage: portfolio import ml-benefits <file.csv> [--date YYYY-MM-DD]")
-        sys.exit(1)
+    """Import a Merrill Lynch Benefits 401k CSV file.
 
+    If no file is given, picks the most recently modified CSV/Excel file from
+    ~/data/portfolio/imports/ml_benefits/.
+    """
     from datetime import date, datetime
     import pandas as pd
     from portfolio import config
@@ -158,7 +159,27 @@ def _cmd_import_ml(args: list[str]) -> None:
     from portfolio.storage import reader as _reader, writer
     from portfolio.pipeline import transforms
 
-    file_path = args[0]
+    # Resolve file path: explicit argument or auto-detect from default directory
+    if args and not args[0].startswith("--"):
+        file_path = args[0]
+    else:
+        import_dir = config.ML_BENEFITS_IMPORT_DIR
+        candidates = sorted(
+            list(import_dir.glob("*.csv")) + list(import_dir.glob("*.xlsx")),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        ) if import_dir.exists() else []
+
+        if not candidates:
+            print(
+                f"No CSV/Excel files found in {import_dir}\n"
+                f"Usage: portfolio import ml-benefits [<file>] [--date YYYY-MM-DD]\n"
+                f"       Drop your ML Benefits export into {import_dir}"
+            )
+            sys.exit(1)
+
+        file_path = str(candidates[0])
+        print(f"Using most recent import file: {candidates[0].name}")
 
     # Optional --date override
     as_of = None
