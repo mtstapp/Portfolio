@@ -146,15 +146,89 @@ def _cmd_status() -> None:
 
 
 def _cmd_import_ml(args: list[str]) -> None:
-    """Import a Merrill Lynch Benefits CSV/Excel file."""
+    """Import a Merrill Lynch Benefits 401k CSV file."""
     if not args:
-        print("Usage: portfolio import ml-benefits <file.csv|file.xlsx>")
+        print("Usage: portfolio import ml-benefits <file.csv> [--date YYYY-MM-DD]")
         sys.exit(1)
 
+    from datetime import date, datetime
+    import pandas as pd
+    from portfolio import config
+    from portfolio.sources import ml_benefits
+    from portfolio.storage import reader as _reader, writer
+    from portfolio.pipeline import transforms
+
     file_path = args[0]
-    print(f"ML Benefits import not yet implemented (Phase 2).")
-    print(f"File: {file_path}")
-    print("For now, place the file in ~/data/portfolio/imports/ml_benefits/")
+
+    # Optional --date override
+    as_of = None
+    if "--date" in args:
+        idx = args.index("--date")
+        if idx + 1 < len(args):
+            try:
+                as_of = datetime.strptime(args[idx + 1], "%Y-%m-%d").date()
+            except ValueError:
+                print(f"Invalid date format: {args[idx + 1]}. Use YYYY-MM-DD.")
+                sys.exit(1)
+
+    effective_date = as_of or date.today()
+
+    print(f"Importing ML Benefits 401k from: {file_path}")
+    try:
+        # 1. Parse CSV
+        raw_df = ml_benefits.parse_csv(file_path, as_of=effective_date)
+
+        # 2. Convert to canonical holdings
+        canonical_ml = ml_benefits.to_canonical(raw_df)
+
+        # 3. Write raw Parquet
+        config.ensure_dirs()
+        writer.write_raw(raw_df, "ml_benefits", "retirement", effective_date)
+
+        # 4. Merge into canonical holdings:
+        #    - Load existing canonical holdings (Schwab + any prior ML import)
+        #    - Drop any existing BofA 401k rows
+        #    - Append new ML rows
+        #    - Write merged result back
+        reader = _reader.DataReader()
+        if reader.has_data():
+            existing = reader.current_holdings()
+            existing = existing[existing["account_id"] != ml_benefits.ACCOUNT_ID]
+            merged = pd.concat([existing, canonical_ml], ignore_index=True)
+        else:
+            merged = canonical_ml
+
+        writer.write_canonical(merged, "holdings", effective_date, snapshot=True)
+
+        # 5. Update accounts Parquet with BofA 401k balance
+        total_value = raw_df["market_value"].sum()
+        acct_row = pd.DataFrame([
+            ml_benefits.canonical_account_row(effective_date, total_value)
+        ])
+        if reader.has_data():
+            existing_accts = reader.current_accounts()
+            existing_accts = existing_accts[
+                existing_accts["account_id"] != ml_benefits.ACCOUNT_ID
+            ]
+            merged_accts = pd.concat([existing_accts, acct_row], ignore_index=True)
+        else:
+            merged_accts = acct_row
+        writer.write_canonical(merged_accts, "accounts")
+
+        n = len(canonical_ml)
+        print(
+            f"\n✓ Imported {n} positions for {ml_benefits.ACCOUNT_NAME} "
+            f"(total: ${total_value:,.0f})"
+        )
+        print(f"  Date: {effective_date}  |  Raw saved to: raw/ml_benefits/retirement/")
+        print("  Canonical holdings updated. Reload the dashboard to see changes.")
+
+    except FileNotFoundError as exc:
+        print(f"\n✗ File not found: {exc}")
+        sys.exit(1)
+    except Exception as exc:
+        print(f"\n✗ Import failed: {exc}")
+        raise
 
 
 def _print_help() -> None:

@@ -134,6 +134,12 @@ def run(force: bool = False, skip_sector: bool = False) -> dict:
     # Append transactions to the unified history
     _append_transactions(canonical_transactions)
 
+    # 7. Merge latest ML Benefits import (if available)
+    canonical_holdings = _merge_ml_benefits(canonical_holdings, today)
+
+    # 8. Compute metrics from final merged holdings
+    _compute_metrics(canonical_holdings)
+
     summary["status"] = "success"
     log.info(
         "=== Refresh complete: %d positions across %d accounts | %d transactions ===",
@@ -196,6 +202,81 @@ def _append_transactions(new_txns) -> None:
         log.debug("Appended %d transactions", len(new_txns))
     except Exception:
         log.exception("Failed to append transactions")
+
+
+# ---------------------------------------------------------------------------
+# ML Benefits merge
+# ---------------------------------------------------------------------------
+
+def _merge_ml_benefits(schwab_holdings: "pd.DataFrame", as_of: date) -> "pd.DataFrame":
+    """Merge the latest ML Benefits raw Parquet into the canonical holdings.
+
+    Looks for the most recent Parquet file under raw/ml_benefits/retirement/.
+    If found, converts it to canonical form and merges with Schwab holdings,
+    then rewrites canonical/holdings/current.parquet.
+
+    Returns the merged DataFrame (or the original if no ML data found).
+    """
+    import pandas as pd
+    from portfolio.sources import ml_benefits as _ml
+
+    retirement_dir = config.RAW_DIR / "ml_benefits" / "retirement"
+    if not retirement_dir.exists():
+        return schwab_holdings
+
+    parquet_files = sorted(retirement_dir.glob("*.parquet"))
+    if not parquet_files:
+        return schwab_holdings
+
+    latest = parquet_files[-1]  # sorted alphabetically = date order
+    try:
+        import pyarrow.parquet as pq
+        ml_raw = pq.read_table(latest).to_pandas()
+
+        # If the raw Parquet already has canonical columns (written by import cmd),
+        # use it directly; otherwise transform from parsed CSV columns.
+        if "account_id" in ml_raw.columns:
+            canonical_ml = transforms.ml_benefits_to_canonical(ml_raw)
+        else:
+            canonical_ml = _ml.to_canonical(ml_raw)
+
+        # Drop any existing BofA 401k rows from Schwab holdings then concat
+        merged = schwab_holdings[schwab_holdings["account_id"] != _ml.ACCOUNT_ID].copy()
+        merged = pd.concat([merged, canonical_ml], ignore_index=True)
+
+        # Rewrite canonical with merged data (snapshot already taken above for Schwab-only)
+        writer.write_canonical(merged, "holdings", as_of, snapshot=False)
+        log.info(
+            "Merged %d ML Benefits positions from %s", len(canonical_ml), latest.name
+        )
+        return merged
+
+    except Exception:
+        log.exception("Failed to merge ML Benefits data from %s", latest)
+        return schwab_holdings
+
+
+# ---------------------------------------------------------------------------
+# Metrics computation
+# ---------------------------------------------------------------------------
+
+def _compute_metrics(holdings: "pd.DataFrame") -> None:
+    """Run all metrics modules against the current canonical holdings."""
+    if holdings.empty:
+        log.debug("No holdings data — skipping metrics computation")
+        return
+
+    try:
+        from portfolio.metrics import allocation, performance, income, risk
+        reader = _reader.DataReader()
+        log.info("Computing metrics...")
+        allocation.compute_all(holdings)
+        performance.compute_all(holdings, reader=reader)
+        income.compute_all(holdings)
+        risk.compute_all(holdings, reader=reader)
+        log.info("Metrics computation complete")
+    except Exception:
+        log.exception("Metrics computation failed (non-fatal)")
 
 
 # ---------------------------------------------------------------------------

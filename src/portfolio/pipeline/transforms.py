@@ -146,6 +146,36 @@ def schwab_transactions_to_canonical(raw_df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ---------------------------------------------------------------------------
+# ML Benefits → canonical holdings
+# ---------------------------------------------------------------------------
+
+def ml_benefits_to_canonical(
+    raw_df: "pd.DataFrame",
+    as_of: date | None = None,
+) -> "pd.DataFrame":
+    """Normalize a parsed ML Benefits DataFrame to the canonical holdings schema.
+
+    Thin wrapper around ml_benefits.to_canonical() that follows the same
+    transform pattern as schwab_positions_to_canonical().
+    """
+    from portfolio.sources import ml_benefits as _ml
+
+    if raw_df.empty:
+        return pd.DataFrame(columns=schema.HOLDINGS_COLS)
+
+    # If the DataFrame came from a raw Parquet (already has canonical columns),
+    # return it directly; otherwise run the full parse.
+    if "account_id" in raw_df.columns and "source" in raw_df.columns:
+        # Already in canonical form (loaded from raw Parquet by daily_refresh)
+        df = raw_df.copy()
+        if as_of:
+            df["date"] = as_of
+        return df[[f.name for f in schema.HOLDINGS_SCHEMA if f.name in df.columns]]
+
+    return _ml.to_canonical(raw_df)
+
+
+# ---------------------------------------------------------------------------
 # Merge allocation overrides into holdings
 # ---------------------------------------------------------------------------
 
