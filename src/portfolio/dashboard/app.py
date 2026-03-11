@@ -29,10 +29,16 @@ st.set_page_config(
 # Data loading
 # ---------------------------------------------------------------------------
 
+@st.cache_resource
+def _get_reader() -> DataReader:
+    """Cache the DataReader as a resource (holds a duckdb connection)."""
+    return DataReader()
+
+
 @st.cache_data(ttl=300)
 def _load():
-    reader = DataReader()
-    return reader.current_holdings(), reader.current_accounts(), reader
+    reader = _get_reader()
+    return reader.current_holdings(), reader.current_accounts()
 
 
 # ---------------------------------------------------------------------------
@@ -43,7 +49,8 @@ _sidebar.render()
 
 st.title("Portfolio Overview")
 
-holdings, accounts, reader = _load()
+holdings, accounts = _load()
+reader = _get_reader()
 
 if not reader.has_data():
     st.info("No portfolio data found.")
