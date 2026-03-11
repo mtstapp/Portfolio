@@ -1,25 +1,19 @@
-"""Streamlit portfolio dashboard – main entry point.
+"""Streamlit portfolio dashboard – main entry point (Overview page).
 
 Run with:
     streamlit run src/portfolio/dashboard/app.py
 
-Pages are defined in dashboard/pages/ and loaded automatically by Streamlit's
-multipage app convention (files prefixed with a number).
+Additional pages are auto-loaded by Streamlit from dashboard/pages/:
+    2_Holdings.py, 3_Allocation.py, 4_Performance.py,
+    5_Income.py, 6_Risk.py, 7_Accounts.py
 """
 
-import subprocess
-import sys
-from datetime import timezone
-from pathlib import Path
-
-# Resolve the portfolio CLI to the same venv as the running Streamlit process,
-# so subprocess.run() works regardless of the shell's PATH.
-_PORTFOLIO = str(Path(sys.executable).parent / "portfolio")
-
 import streamlit as st
+import plotly.express as px
+import plotly.graph_objects as go
 
-from portfolio.auth import schwab_oauth
 from portfolio.storage.reader import DataReader
+from portfolio.dashboard.components import sidebar as _sidebar
 
 # ---------------------------------------------------------------------------
 # Page config (must be first Streamlit call)
@@ -32,209 +26,141 @@ st.set_page_config(
 )
 
 # ---------------------------------------------------------------------------
-# Shared data reader (cached for the session)
+# Data loading
 # ---------------------------------------------------------------------------
 
-@st.cache_resource
-def get_reader() -> DataReader:
-    return DataReader()
-
-
-# ---------------------------------------------------------------------------
-# Sidebar
-# ---------------------------------------------------------------------------
-
-def render_sidebar() -> None:
-    with st.sidebar:
-        st.title("📈 Portfolio")
-        st.divider()
-
-        # Auth status
-        days = schwab_oauth.token_days_remaining()
-        if days is None:
-            st.error("⚠️ Not authenticated")
-        elif days < 2:
-            st.warning(f"⚠️ Token expires in {days:.1f} days")
-        else:
-            st.success(f"✓ Schwab connected ({days:.0f}d)")
-
-        # Re-auth button
-        if st.button("🔐 Re-authenticate with Schwab", use_container_width=True):
-            st.info("Starting auth server… A browser tab will open.\n\n"
-                    "If you see a security warning, click **Advanced → Proceed**.")
-            with st.spinner("Waiting for Schwab authentication…"):
-                try:
-                    result = subprocess.run(
-                        [_PORTFOLIO, "auth", "--no-browser"],
-                        capture_output=True, text=True, timeout=180,
-                    )
-                    if result.returncode == 0:
-                        st.success("Authentication successful!")
-                        st.rerun()
-                    else:
-                        st.error(f"Auth failed:\n{result.stderr}")
-                except subprocess.TimeoutExpired:
-                    st.error("Authentication timed out (3 min). Please try again.")
-
-        st.divider()
-
-        # Last refresh
-        reader = get_reader()
-        last = reader.last_refresh_date()
-        if last:
-            st.caption(f"Last refresh: **{last}**")
-        else:
-            st.caption("No data yet – run `portfolio refresh`")
-
-        # Manual refresh button
-        if st.button("🔄 Refresh Data", use_container_width=True):
-            with st.spinner("Refreshing Schwab data…"):
-                result = subprocess.run(
-                    [_PORTFOLIO, "refresh"],
-                    capture_output=True, text=True, timeout=600,
-                )
-            if result.returncode == 0:
-                st.success("Data refreshed!")
-                st.cache_data.clear()
-                st.rerun()
-            else:
-                st.error(f"Refresh failed:\n{result.stderr[-500:]}")
-
-        st.divider()
-        st.caption("Portfolio Dashboard v0.1")
+@st.cache_data(ttl=300)
+def _load():
+    reader = DataReader()
+    return reader.current_holdings(), reader.current_accounts(), reader
 
 
 # ---------------------------------------------------------------------------
-# Main page content (Overview)
+# Sidebar + Overview
 # ---------------------------------------------------------------------------
 
-def render_overview() -> None:
-    st.title("Portfolio Overview")
+_sidebar.render()
 
-    reader = get_reader()
+st.title("Portfolio Overview")
 
-    if not reader.has_data():
-        st.info("No portfolio data found.")
-        st.markdown("""
-        **To get started:**
-        1. Run `portfolio setup` to store your Schwab credentials in Keychain
-        2. Run `portfolio auth` to authenticate with Schwab
-        3. Run `portfolio refresh` to pull your portfolio data
-        4. Reload this page
-        """)
-        return
+holdings, accounts, reader = _load()
 
-    holdings = reader.current_holdings()
-    accounts = reader.current_accounts()
+if not reader.has_data():
+    st.info("No portfolio data found.")
+    st.markdown("""
+**To get started:**
+1. Run `portfolio setup` to store your Schwab credentials in Keychain
+2. Run `portfolio auth` to authenticate with Schwab
+3. Run `portfolio refresh` to pull your portfolio data
+4. Reload this page
+""")
+    st.stop()
 
-    if holdings.empty:
-        st.warning("Holdings data is empty. Try running `portfolio refresh`.")
-        return
+if holdings.empty:
+    st.warning("Holdings data is empty. Try running `portfolio refresh`.")
+    st.stop()
 
-    # --- KPI Cards ---
-    total_value = holdings["market_value"].sum()
-    total_cost = holdings["cost_basis"].sum()
-    total_gain = total_value - total_cost
-    total_gain_pct = total_gain / total_cost * 100 if total_cost else 0
-    projected_income = holdings["div_annual_total"].sum() if "div_annual_total" in holdings.columns else 0
-    portfolio_beta = holdings["weighted_beta"].sum() if "weighted_beta" in holdings.columns else 0
+# ---------------------------------------------------------------------------
+# KPI Cards
+# ---------------------------------------------------------------------------
 
-    col1, col2, col3, col4 = st.columns(4)
-    with col1:
-        st.metric("Total Portfolio Value", f"${total_value:,.0f}")
-    with col2:
-        st.metric("Total Gain / Loss",
-                  f"${total_gain:,.0f}",
-                  delta=f"{total_gain_pct:.1f}%")
-    with col3:
-        st.metric("Projected Annual Income", f"${projected_income:,.0f}")
-    with col4:
-        st.metric("Portfolio Beta", f"{portfolio_beta:.2f}")
+total_value      = holdings["market_value"].sum()
+total_cost       = holdings["cost_basis"].sum()
+total_gain       = total_value - total_cost
+total_gain_pct   = total_gain / total_cost * 100 if total_cost else 0.0
+projected_income = holdings["div_annual_total"].sum() if "div_annual_total" in holdings.columns else 0.0
+portfolio_beta   = holdings["weighted_beta"].sum() if "weighted_beta" in holdings.columns else 0.0
 
-    st.divider()
+col1, col2, col3, col4 = st.columns(4)
+col1.metric("Total Portfolio Value",   f"${total_value:,.0f}")
+col2.metric("Total Gain / Loss",       f"${total_gain:,.0f}", f"{total_gain_pct:+.1f}%")
+col3.metric("Projected Annual Income", f"${projected_income:,.0f}")
+col4.metric("Portfolio Beta",          f"{portfolio_beta:.2f}")
 
-    col_left, col_right = st.columns([1, 1])
+st.divider()
 
-    # --- Account breakdown ---
-    with col_left:
-        st.subheader("By Account")
-        if not accounts.empty and "account_name" in accounts.columns:
-            import plotly.express as px
-            fig = px.bar(
-                accounts.sort_values("total_value", ascending=True),
-                x="total_value",
-                y="account_name",
-                orientation="h",
-                labels={"total_value": "Value ($)", "account_name": "Account"},
-                text_auto="$.3s",
-            )
-            fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            # Aggregate from holdings if accounts df not available
-            by_acct = holdings.groupby("account_name")["market_value"].sum().reset_index()
-            import plotly.express as px
-            fig = px.bar(
-                by_acct.sort_values("market_value", ascending=True),
-                x="market_value",
-                y="account_name",
-                orientation="h",
-                labels={"market_value": "Value ($)", "account_name": "Account"},
-                text_auto="$.3s",
-            )
-            fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+# ---------------------------------------------------------------------------
+# Account breakdown  +  Security type pie
+# ---------------------------------------------------------------------------
 
-    # --- Asset type breakdown ---
-    with col_right:
-        st.subheader("By Security Type")
-        if "security_type" in holdings.columns:
-            import plotly.express as px
-            by_type = holdings.groupby("security_type")["market_value"].sum().reset_index()
-            fig = px.pie(by_type, values="market_value", names="security_type",
-                         hole=0.4)
-            fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
-            st.plotly_chart(fig, use_container_width=True)
+col_left, col_right = st.columns(2)
 
-    st.divider()
+with col_left:
+    st.subheader("By Account")
+    if not accounts.empty and "total_value" in accounts.columns:
+        src_df = accounts.rename(columns={"total_value": "market_value",
+                                           "account_name": "account_name"})
+    else:
+        src_df = holdings.groupby("account_name", as_index=False)["market_value"].sum()
 
-    # --- Top 10 Holdings ---
-    st.subheader("Top 10 Holdings")
-    top10 = (
-        holdings[holdings["symbol"] != "cashBalance"]
-        .nlargest(10, "market_value")
-        [["symbol", "description", "security_type", "market_value",
-          "gain_loss", "portfolio_pct"]]
-        .copy()
+    fig = px.bar(
+        src_df.sort_values("market_value"),
+        x="market_value",
+        y="account_name",
+        orientation="h",
+        text_auto="$.3s",
+        labels={"market_value": "Value ($)", "account_name": ""},
     )
-    top10["market_value"] = top10["market_value"].map("${:,.0f}".format)
-    top10["gain_loss"] = top10["gain_loss"].map("${:,.0f}".format)
-    top10["portfolio_pct"] = (top10["portfolio_pct"] * 100).map("{:.1f}%".format)
-    top10.columns = ["Symbol", "Description", "Type", "Value", "Gain/Loss", "% Portfolio"]
-    st.dataframe(top10, use_container_width=True, hide_index=True)
+    fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
+    fig.update_xaxes(tickprefix="$", tickformat=",.0f")
+    st.plotly_chart(fig, use_container_width=True)
 
-    # --- Portfolio value history (if available) ---
-    history = reader.portfolio_value_history(days=365)
-    if not history.empty and len(history) > 1:
-        st.divider()
-        st.subheader("Portfolio Value History")
-        import plotly.graph_objects as go
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=history["date"], y=history["total_value"],
-            mode="lines", fill="tozeroy",
-            line=dict(color="#00a3e0", width=2),
-        ))
-        fig.update_layout(
-            yaxis_tickprefix="$", yaxis_tickformat=",.0f",
-            height=300, margin=dict(l=0, r=0, t=0, b=0),
-        )
-        st.plotly_chart(fig, use_container_width=True)
+with col_right:
+    st.subheader("By Security Type")
+    by_type = holdings.groupby("security_type", as_index=False)["market_value"].sum()
+    fig = px.pie(
+        by_type,
+        values="market_value",
+        names="security_type",
+        hole=0.4,
+        color_discrete_sequence=px.colors.qualitative.Plotly,
+    )
+    fig.update_traces(textposition="inside", textinfo="percent+label")
+    fig.update_layout(height=300, margin=dict(l=0, r=0, t=0, b=0))
+    st.plotly_chart(fig, use_container_width=True)
 
+st.divider()
 
 # ---------------------------------------------------------------------------
-# Entry point
+# Top 10 Holdings
 # ---------------------------------------------------------------------------
 
-render_sidebar()
-render_overview()
+st.subheader("Top 10 Holdings")
+
+top10 = (
+    holdings[holdings["symbol"] != "cashBalance"]
+    .nlargest(10, "market_value")
+    [["symbol", "description", "security_type", "account_name",
+      "market_value", "gain_loss", "portfolio_pct"]]
+    .copy()
+)
+top10["market_value"]  = top10["market_value"].map("${:,.0f}".format)
+top10["gain_loss"]     = top10["gain_loss"].map("${:,.0f}".format)
+top10["portfolio_pct"] = (top10["portfolio_pct"] * 100).map("{:.1f}%".format)
+top10.columns = ["Symbol", "Description", "Type", "Account",
+                 "Value", "Gain/Loss", "% Portfolio"]
+st.dataframe(top10, use_container_width=True, hide_index=True)
+
+# ---------------------------------------------------------------------------
+# Portfolio value history (when available)
+# ---------------------------------------------------------------------------
+
+history = reader.portfolio_value_history(days=365)
+if not history.empty and len(history) > 1:
+    st.divider()
+    st.subheader("Portfolio Value History")
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=history["date"],
+        y=history["total_value"],
+        mode="lines",
+        fill="tozeroy",
+        line=dict(color="#00a3e0", width=2),
+    ))
+    fig.update_layout(
+        height=300,
+        margin=dict(l=0, r=0, t=0, b=0),
+        yaxis_tickprefix="$",
+        yaxis_tickformat=",.0f",
+    )
+    st.plotly_chart(fig, use_container_width=True)
