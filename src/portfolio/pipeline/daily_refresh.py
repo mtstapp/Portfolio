@@ -118,7 +118,7 @@ def run(force: bool = False, skip_sector: bool = False) -> dict:
     canonical_accounts = transforms.schwab_accounts_to_canonical(accounts_df, today)
     canonical_transactions = transforms.schwab_transactions_to_canonical(transactions_df)
 
-    # 4. Load allocation overrides (Google Sheet)
+    # 4. Load allocation overrides (Google Sheet) — uses new allocations module
     overrides_df = _load_allocation_overrides(canonical_holdings)
 
     # 5. Merge overrides into holdings
@@ -126,6 +126,9 @@ def run(force: bool = False, skip_sector: bool = False) -> dict:
         canonical_holdings = transforms.apply_allocation_overrides(
             canonical_holdings, overrides_df
         )
+
+    # 5b. Derive account tax treatment (Dimension 11)
+    canonical_holdings = transforms.apply_tax_treatment(canonical_holdings)
 
     # 6. Write canonical layers
     writer.write_canonical(canonical_holdings, "holdings", today, snapshot=True)
@@ -149,17 +152,27 @@ def run(force: bool = False, skip_sector: bool = False) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Allocation overrides loader
+# Allocation overrides loader (uses new allocations module)
 # ---------------------------------------------------------------------------
 
 def _load_allocation_overrides(current_holdings) -> "pd.DataFrame":
-    """Read allocation overrides from Google Sheet and sync symbols."""
+    """Read allocation overrides from Google Sheet, sync symbols, and classify.
+
+    Uses ``portfolio.sources.allocations.sync_and_classify()`` which:
+    - Reads the current Sheet
+    - Adds new symbols with LLM-assisted (or rule-based) classification
+    - Removes sold symbols
+    - Installs dropdown validation
+    - Writes the updated data back to the Sheet
+    """
     import pandas as pd
 
     gs_creds = None
+    perplexity_key = None
     try:
         from portfolio.auth import keychain
         gs_creds = keychain.get("google-sheets-creds")
+        perplexity_key = keychain.get("perplexity-api-key")
     except Exception:
         pass
 
@@ -168,20 +181,18 @@ def _load_allocation_overrides(current_holdings) -> "pd.DataFrame":
         return pd.DataFrame()
 
     try:
-        import pygsheets
-        gc = pygsheets.authorize(service_file=gs_creds)
-        wb = gc.open("Portfolio")
-        ws = wb.worksheet_by_title("Allocations")
-        overrides_df = ws.get_as_df()
+        from portfolio.sources import allocations
 
-        # Sync symbols (add new, remove sold)
-        synced = transforms.sync_allocation_symbols(current_holdings, overrides_df)
-        if not synced.equals(overrides_df):
-            ws.set_dataframe(synced, (1, 1), fit=True)
-            log.info("Synced allocation sheet: %d symbols", len(synced))
+        overrides_df = allocations.sync_and_classify(
+            holdings_df=current_holdings,
+            gs_creds_path=gs_creds,
+            perplexity_api_key=perplexity_key,
+            setup_dropdowns_flag=True,
+        )
 
-        writer.write_canonical(synced, "allocations")
-        return synced
+        writer.write_canonical(overrides_df, "allocations")
+        log.info("Allocation overrides: %d symbols synced", len(overrides_df))
+        return overrides_df
 
     except Exception:
         log.exception("Failed to load allocation overrides from Google Sheets")

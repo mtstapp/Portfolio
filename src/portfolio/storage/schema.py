@@ -91,6 +91,16 @@ ALLOCATIONS_SCHEMA = pa.schema([
     pa.field("symbol",               pa.string()),
     pa.field("description",          pa.string()),
     pa.field("asset_class",          pa.string()),
+    pa.field("objective",            pa.string()),
+    pa.field("region",               pa.string()),
+    pa.field("equity_style",         pa.string()),
+    pa.field("fi_style",             pa.string()),
+    pa.field("fi_sector",            pa.string()),
+    pa.field("factor",               pa.string()),
+    pa.field("income_type",          pa.string()),
+    pa.field("vehicle_type",         pa.string()),
+    pa.field("sector",               pa.string()),
+    pa.field("industry",             pa.string()),
     pa.field("risk_score",           pa.float64()),
     pa.field("pct_domestic_stock",   pa.float64()),
     pa.field("pct_intl_stock",       pa.float64()),
@@ -104,16 +114,24 @@ ALLOCATIONS_SCHEMA = pa.schema([
 
 ALLOCATION_COLS = [f.name for f in ALLOCATIONS_SCHEMA]
 
-# Valid asset class values
+# Valid asset class values (expanded 16-value taxonomy)
 ASSET_CLASSES = [
-    "Domestic Stock",
-    "Intl Stock",
-    "EM Stock",
-    "Domestic Bond",
-    "Intl Bond",
-    "Cash",
-    "Alternative",
-    "Unknown",
+    "US Equity",
+    "Intl Developed Equity",
+    "Emerging Market Equity",
+    "Investment-Grade Bond",
+    "High-Yield Bond",
+    "Intl/EM Bond",
+    "TIPS/Inflation-Linked",
+    "Cash & Equivalents",
+    "Real Estate (REITs)",
+    "Commodities",
+    "Infrastructure",
+    "Private Credit/BDC",
+    "MLP/Energy Income",
+    "Preferred Stock",
+    "Multi-Asset/Allocation",
+    "Other Alternative",
 ]
 
 # Look-through percentage column names (must sum to 100)
@@ -125,4 +143,10 @@ LOOK_THROUGH_COLS = [
     "pct_intl_bond",
     "pct_cash",
     "pct_alternative",
+]
+
+# Taxonomy dimension columns (from allocations module)
+TAXONOMY_COLS = [
+    "asset_class", "objective", "region", "equity_style",
+    "fi_style", "fi_sector", "factor", "income_type", "vehicle_type",
 ]

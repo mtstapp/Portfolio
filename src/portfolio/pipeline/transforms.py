@@ -185,30 +185,45 @@ def apply_allocation_overrides(
 ) -> pd.DataFrame:
     """Merge manual allocation data (Google Sheet) into holdings.
 
-    Preserves existing asset_class / risk_score if overrides are absent for
-    a symbol. For look-through columns (pct_*), also merges them.
+    Merges all taxonomy dimension columns, look-through columns, risk_score,
+    and manual_price from the overrides sheet.  Override values take
+    precedence; existing holdings values are kept when overrides are blank.
     """
     if overrides_df.empty:
         return holdings_df
 
-    override_cols = ["symbol", "asset_class", "risk_score"] + schema.LOOK_THROUGH_COLS
-    override_cols = [c for c in override_cols if c in overrides_df.columns]
+    # Columns to merge from overrides (all taxonomy + look-through + risk + manual_price)
+    merge_cols = (
+        ["symbol"]
+        + schema.TAXONOMY_COLS
+        + ["sector", "industry", "risk_score"]
+        + schema.LOOK_THROUGH_COLS
+        + ["manual_price"]
+    )
+    merge_cols = [c for c in merge_cols if c in overrides_df.columns]
 
     merged = holdings_df.merge(
-        overrides_df[override_cols],
+        overrides_df[merge_cols],
         on="symbol",
         how="left",
         suffixes=("", "_override"),
     )
 
-    # Prefer override values where present
-    for col in ["asset_class", "risk_score"]:
+    # Prefer override values where present (non-empty, non-NaN)
+    for col in schema.TAXONOMY_COLS + ["sector", "industry", "risk_score"]:
         override_col = f"{col}_override"
         if override_col in merged.columns:
-            merged[col] = merged[override_col].combine_first(merged[col])
+            # For string columns: prefer non-empty override
+            if merged[override_col].dtype == object:
+                mask = merged[override_col].notna() & (merged[override_col] != "")
+                merged.loc[mask, col] = merged.loc[mask, override_col]
+            else:
+                merged[col] = merged[override_col].combine_first(merged[col])
             merged.drop(columns=[override_col], inplace=True)
+        elif col not in merged.columns:
+            merged[col] = "" if col != "risk_score" else 0.0
 
-    # Pull in look-through cols that may not be in holdings_df
+    # Pull in look-through cols
     for col in schema.LOOK_THROUGH_COLS:
         override_col = f"{col}_override"
         if override_col in merged.columns:
@@ -217,11 +232,43 @@ def apply_allocation_overrides(
         elif col not in merged.columns:
             merged[col] = 0.0
 
+    # manual_price override
+    mp_override = "manual_price_override"
+    if mp_override in merged.columns:
+        merged["manual_price"] = merged[mp_override].combine_first(
+            merged.get("manual_price", pd.Series(dtype=float))
+        )
+        merged.drop(columns=[mp_override], inplace=True)
+    elif "manual_price" not in merged.columns:
+        merged["manual_price"] = 0.0
+
     return merged
 
 
 # ---------------------------------------------------------------------------
-# Sync allocation sheet symbols with current holdings
+# Derive account tax treatment (Dimension 11 — NOT in Sheet)
+# ---------------------------------------------------------------------------
+
+def apply_tax_treatment(holdings_df: pd.DataFrame) -> pd.DataFrame:
+    """Add ``tax_treatment`` column derived from ``account_type``.
+
+    Uses the mapping from allocations module: brokerage/joint/trust → Taxable,
+    IRA/SEP/401K → Tax-Deferred, Roth → Tax-Exempt, HSA → HSA.
+    """
+    from portfolio.sources.allocations import derive_tax_treatment
+
+    df = holdings_df.copy()
+    if "account_type" in df.columns:
+        df["tax_treatment"] = df["account_type"].apply(
+            lambda t: derive_tax_treatment(t) if pd.notna(t) and t else "Taxable"
+        )
+    else:
+        df["tax_treatment"] = "Taxable"
+    return df
+
+
+# ---------------------------------------------------------------------------
+# Sync allocation sheet symbols with current holdings  (legacy wrapper)
 # ---------------------------------------------------------------------------
 
 def sync_allocation_symbols(
@@ -229,6 +276,10 @@ def sync_allocation_symbols(
     overrides_df: pd.DataFrame,
 ) -> pd.DataFrame:
     """Add new symbols / remove sold symbols from the allocation overrides.
+
+    NOTE: This is a legacy wrapper kept for backward compatibility.
+    The full sync-and-classify workflow is now in
+    ``portfolio.sources.allocations.sync_and_classify()``.
 
     - New symbols get a blank row (user fills in allocation manually)
     - Sold symbols are removed
