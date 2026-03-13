@@ -714,7 +714,7 @@ def setup_dropdowns(gs_creds_path: str) -> None:
 
     if requests:
         try:
-            ws.spreadsheet.batch_update({"requests": requests})
+            ws.spreadsheet.custom_request(requests, fields='*')
         except Exception:
             log.warning("Failed to install dropdown validation", exc_info=True)
 

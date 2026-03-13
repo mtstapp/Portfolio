@@ -7,8 +7,8 @@ Using a separate file (rather than the login Keychain) means credentials
 are accessible in headless SSH and launchd contexts without auto-lock
 problems or user-interaction prompts.
 
-The Keychain is created automatically on first `portfolio setup` with:
-  - Empty password  (no unlock required)
+The Keychain is created automatically on first ``portfolio setup`` with:
+  - A known app-level password (avoids empty-string edge cases)
   - Auto-lock disabled  (-t 0, no lock on sleep)
 
 Keys used:
@@ -28,10 +28,16 @@ from pathlib import Path
 
 SERVICE = "portfolio-dashboard"
 
-# Dedicated per-app Keychain — never auto-locks, no password required.
-# Kept separate from login.keychain which is unavailable/locked in
-# headless SSH sessions and launchd contexts.
+# Dedicated per-app Keychain — never auto-locks, known password for
+# non-interactive unlock.  Kept separate from login.keychain which is
+# unavailable/locked in headless SSH sessions and launchd contexts.
 KEYCHAIN_FILE = Path.home() / "Library" / "Keychains" / "portfolio.keychain-db"
+
+# Known password for the portfolio Keychain.  Using a non-empty string
+# avoids macOS edge-cases where an empty password triggers GUI prompts
+# on some versions.  The file is user-owned (600 perms) on a single-user
+# Mac Mini, so this is not a meaningful security trade-off.
+_KEYCHAIN_PASSWORD = "portfolio-dashboard"
 
 # Substrings in security CLI stderr that indicate the Keychain is locked
 # rather than the item simply being absent.
@@ -42,7 +48,7 @@ _LOCKED_MARKERS = (
 
 _UNLOCK_HINT = (
     f"The portfolio Keychain is locked or inaccessible ({KEYCHAIN_FILE}).\n"
-    f"Unlock: security unlock-keychain {KEYCHAIN_FILE}\n"
+    f"Unlock: security unlock-keychain -p portfolio-dashboard {KEYCHAIN_FILE}\n"
     f"Or recreate: portfolio setup"
 )
 
@@ -54,22 +60,29 @@ def _is_locked_error(stderr: str) -> bool:
 
 
 def _unlock_keychain() -> bool:
-    """Unlock the portfolio Keychain using its empty password (non-interactive).
+    """Unlock the portfolio Keychain using its known password (non-interactive).
 
-    Returns True if the unlock succeeded, False if it failed (e.g. the Keychain
-    was created with a non-empty password by an older version of the code).
+    Returns True on success, False on failure.  A 5-second timeout prevents
+    the subprocess from blocking indefinitely if macOS shows a GUI password
+    dialog (which bypasses capture_output).
     """
-    result = subprocess.run(
-        ["security", "unlock-keychain", "-p", "", str(KEYCHAIN_FILE)],
-        capture_output=True,
-    )
-    return result.returncode == 0
+    try:
+        result = subprocess.run(
+            ["security", "unlock-keychain", "-p", _KEYCHAIN_PASSWORD,
+             str(KEYCHAIN_FILE)],
+            capture_output=True,
+            timeout=5,
+        )
+        return result.returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 def _create_keychain() -> None:
-    """Create a fresh portfolio Keychain with empty password and no auto-lock."""
+    """Create a fresh portfolio Keychain with the known password and no auto-lock."""
     result = subprocess.run(
-        ["security", "create-keychain", "-p", "", str(KEYCHAIN_FILE)],
+        ["security", "create-keychain", "-p", _KEYCHAIN_PASSWORD,
+         str(KEYCHAIN_FILE)],
         capture_output=True,
         text=True,
     )
@@ -90,19 +103,30 @@ def _create_keychain() -> None:
 def _ensure_keychain() -> None:
     """Ensure the portfolio Keychain exists and is unlocked.
 
-    If the Keychain file exists but cannot be unlocked with the empty password
+    If the Keychain file exists but cannot be unlocked with the known password
     (e.g. created by an older version of the code, or the file is corrupted),
     it is deleted and recreated so the user never sees a macOS password dialog.
     Any previously stored credentials will need to be re-entered via
-    'portfolio setup'.
+    ``portfolio setup``.
     """
     if KEYCHAIN_FILE.exists():
         if _unlock_keychain():
             return  # Exists and successfully unlocked — done.
-        # Unlock failed (wrong password or corrupted file).
+        # Unlock failed (wrong password, dialog timeout, or corrupted file).
         # Delete and recreate so the password dialog never appears.
         KEYCHAIN_FILE.unlink()
 
+    _create_keychain()
+
+
+def reset() -> None:
+    """Delete and recreate the portfolio Keychain with a fresh known password.
+
+    Called at the start of ``portfolio setup`` to guarantee a clean state
+    and prevent any macOS password dialogs from a stale Keychain file.
+    """
+    if KEYCHAIN_FILE.exists():
+        KEYCHAIN_FILE.unlink()
     _create_keychain()
 
 
@@ -111,7 +135,7 @@ def get(key: str) -> str | None:
 
     Returns None if the item is not found or the Keychain doesn't exist.
     Unlocks proactively before reading; if unlock fails, returns None rather
-    than proceeding (which would trigger a macOS password dialog).
+    than proceeding (which could trigger a macOS password dialog).
     """
     if not KEYCHAIN_FILE.exists():
         return None

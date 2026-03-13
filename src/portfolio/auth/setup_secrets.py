@@ -55,6 +55,10 @@ def run_setup(
         _show_current_values()
         return
 
+    # Always start with a fresh keychain to avoid macOS password dialog issues.
+    # This deletes and recreates with a known password so unlock never blocks.
+    keychain.reset()
+
     if show:
         print("ℹ  Visible input mode (--show): keystrokes will be visible.\n")
 
