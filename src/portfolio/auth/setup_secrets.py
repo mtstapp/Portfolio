@@ -46,7 +46,10 @@ def run_setup(
         show: Use visible input (no masking) for easier paste verification.
         verify: Print currently stored values (partially masked); no prompts.
     """
+    from portfolio.auth.keychain import KEYCHAIN_FILE
+
     print("\n=== Portfolio Dashboard – Credentials Setup ===\n")
+    print(f"Storing credentials in: {KEYCHAIN_FILE}\n")
 
     if verify:
         _show_current_values()
