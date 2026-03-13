@@ -53,33 +53,21 @@ def _is_locked_error(stderr: str) -> bool:
     return any(m.lower() in sl for m in _LOCKED_MARKERS)
 
 
-def _unlock_keychain() -> None:
+def _unlock_keychain() -> bool:
     """Unlock the portfolio Keychain using its empty password (non-interactive).
 
-    Called after creation and as a silent retry when a locked-error is detected,
-    so the Keychain is always accessible in headless/launchd contexts without
-    any macOS password dialog or user interaction.
+    Returns True if the unlock succeeded, False if it failed (e.g. the Keychain
+    was created with a non-empty password by an older version of the code).
     """
-    subprocess.run(
+    result = subprocess.run(
         ["security", "unlock-keychain", "-p", "", str(KEYCHAIN_FILE)],
         capture_output=True,
     )
+    return result.returncode == 0
 
 
-def _ensure_keychain() -> None:
-    """Create and configure the portfolio Keychain if it doesn't exist yet.
-
-    Also unlocks the Keychain proactively so that subsequent writes never
-    trigger a macOS password dialog (the dialog appears before the CLI can
-    return an error, so retry-after-error is too late).
-    """
-    if KEYCHAIN_FILE.exists():
-        # Unlock proactively every time — no-op if already unlocked, and
-        # prevents the macOS dialog that appears when writing to a locked Keychain
-        # in an interactive terminal session.
-        _unlock_keychain()
-        return
-
+def _create_keychain() -> None:
+    """Create a fresh portfolio Keychain with empty password and no auto-lock."""
     result = subprocess.run(
         ["security", "create-keychain", "-p", "", str(KEYCHAIN_FILE)],
         capture_output=True,
@@ -90,26 +78,47 @@ def _ensure_keychain() -> None:
             f"Failed to create portfolio Keychain at {KEYCHAIN_FILE}:\n"
             f"{result.stderr.strip()}"
         )
-
     # -t 0 = no auto-lock timeout; omitting -l = don't lock on sleep
     subprocess.run(
         ["security", "set-keychain-settings", "-t", "0", str(KEYCHAIN_FILE)],
         capture_output=True,
     )
-    # Newly-created Keychains start locked even with an empty password.
-    # Unlock immediately so the first write doesn't trigger a macOS dialog.
+    # Newly-created Keychains start locked — unlock immediately.
     _unlock_keychain()
+
+
+def _ensure_keychain() -> None:
+    """Ensure the portfolio Keychain exists and is unlocked.
+
+    If the Keychain file exists but cannot be unlocked with the empty password
+    (e.g. created by an older version of the code, or the file is corrupted),
+    it is deleted and recreated so the user never sees a macOS password dialog.
+    Any previously stored credentials will need to be re-entered via
+    'portfolio setup'.
+    """
+    if KEYCHAIN_FILE.exists():
+        if _unlock_keychain():
+            return  # Exists and successfully unlocked — done.
+        # Unlock failed (wrong password or corrupted file).
+        # Delete and recreate so the password dialog never appears.
+        KEYCHAIN_FILE.unlink()
+
+    _create_keychain()
 
 
 def get(key: str) -> str | None:
     """Read a secret from the portfolio Keychain.
 
-    Returns None if the item is not found (errSecItemNotFound / rc=44).
-    Unlocks the Keychain proactively before reading to prevent the macOS
-    password dialog in interactive sessions.
+    Returns None if the item is not found or the Keychain doesn't exist.
+    Unlocks proactively before reading; if unlock fails, returns None rather
+    than proceeding (which would trigger a macOS password dialog).
     """
-    if KEYCHAIN_FILE.exists():
-        _unlock_keychain()
+    if not KEYCHAIN_FILE.exists():
+        return None
+    if not _unlock_keychain():
+        # Can't unlock (wrong password or corrupted) — treat as not configured.
+        # The user should run 'portfolio setup' to recreate the Keychain.
+        return None
     result = subprocess.run(
         ["security", "find-generic-password",
          "-s", SERVICE, "-a", key, "-w", str(KEYCHAIN_FILE)],
@@ -119,20 +128,7 @@ def get(key: str) -> str | None:
     if result.returncode == 0:
         return result.stdout.strip() or None
     if _is_locked_error(result.stderr):
-        # Keychain locked (e.g. after reboot) — unlock silently and retry once
-        _unlock_keychain()
-        result2 = subprocess.run(
-            ["security", "find-generic-password",
-             "-s", SERVICE, "-a", key, "-w", str(KEYCHAIN_FILE)],
-            capture_output=True,
-            text=True,
-        )
-        if result2.returncode == 0:
-            return result2.stdout.strip() or None
-        if _is_locked_error(result2.stderr):
-            raise RuntimeError(_UNLOCK_HINT)
-        # rc=44 after unlock = item genuinely not present
-        return None
+        raise RuntimeError(_UNLOCK_HINT)
     # rc=44 = errSecItemNotFound — item genuinely not present
     return None
 
@@ -141,8 +137,8 @@ def set(key: str, value: str) -> None:
     """Write a secret to the portfolio Keychain.
 
     Creates the Keychain on first use if it doesn't exist yet.
-    If the Keychain is locked (e.g. after a reboot), attempts a silent
-    unlock with the empty password and retries once before raising.
+    _ensure_keychain() guarantees the Keychain is unlocked before the write,
+    so no macOS password dialog will appear.
     """
     _ensure_keychain()
     result = subprocess.run(
@@ -152,22 +148,6 @@ def set(key: str, value: str) -> None:
         text=True,
     )
     if result.returncode != 0:
-        if _is_locked_error(result.stderr):
-            # Keychain locked (e.g. after reboot) — unlock silently and retry once
-            _unlock_keychain()
-            result2 = subprocess.run(
-                ["security", "add-generic-password",
-                 "-U", "-A", "-s", SERVICE, "-a", key, "-w", value, str(KEYCHAIN_FILE)],
-                capture_output=True,
-                text=True,
-            )
-            if result2.returncode == 0:
-                return
-            if _is_locked_error(result2.stderr):
-                raise RuntimeError(_UNLOCK_HINT)
-            raise RuntimeError(
-                f"Failed to store keychain item '{key}': {result2.stderr.strip()}"
-            )
         raise RuntimeError(f"Failed to store keychain item '{key}': {result.stderr.strip()}")
 
 
