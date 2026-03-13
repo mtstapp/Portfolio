@@ -5,6 +5,10 @@ Run once on each machine (dev laptop and Mac Mini):
 
 Prompts for each credential with getpass (no echo). Optionally migrates
 existing credentials from an .env file.
+
+Flags:
+    --show    Visible input (no masking) so you can verify what you paste
+    --verify  Print currently stored values (partially masked), no prompts
 """
 
 import getpass
@@ -13,10 +17,43 @@ from pathlib import Path
 from portfolio.auth import keychain
 
 
-def run_setup(migrate_env: str | None = None) -> None:
-    """Interactive credential setup. Stores all secrets in Keychain."""
+def _mask(value: str) -> str:
+    """Return a partially-masked string for verification output.
 
+    Shows first 6 and last 4 characters with '...' in between so the user
+    can compare against what's shown in the Schwab Developer Portal without
+    exposing the full secret.
+
+    If the value is suspiciously short (≤10 chars) it is shown in full
+    with a warning, since that likely indicates a truncation error.
+    """
+    if not value:
+        return "(empty)"
+    if len(value) <= 10:
+        return f"{value}  ⚠ very short (expected 32+ chars)"
+    return f"{value[:6]}...{value[-4:]}  ({len(value)} chars)"
+
+
+def run_setup(
+    migrate_env: str | None = None,
+    show: bool = False,
+    verify: bool = False,
+) -> None:
+    """Interactive credential setup. Stores all secrets in Keychain.
+
+    Args:
+        migrate_env: Path to .env file to migrate credentials from.
+        show: Use visible input (no masking) for easier paste verification.
+        verify: Print currently stored values (partially masked); no prompts.
+    """
     print("\n=== Portfolio Dashboard – Credentials Setup ===\n")
+
+    if verify:
+        _show_current_values()
+        return
+
+    if show:
+        print("ℹ  Visible input mode (--show): keystrokes will be visible.\n")
 
     existing_env: dict[str, str] = {}
     if migrate_env:
@@ -40,19 +77,19 @@ def run_setup(migrate_env: str | None = None) -> None:
                 existing = stored
 
         if existing:
-            hint = f" [{'*' * min(8, len(existing))} – press Enter to keep]"
+            hint = f" [{_mask(existing)} – Enter to keep]"
         else:
             hint = ""
 
         prompt_str = f"{label}{hint}: "
-        if secret:
+        if secret and not show:
             value = getpass.getpass(prompt_str) or existing
         else:
             value = input(prompt_str) or existing
 
         return value.strip()
 
-    # Schwab credentials
+    # ── Schwab credentials ────────────────────────────────────────────────
     print("── Schwab API Credentials ──────────────────────────")
     print("Get these from https://developer.schwab.com → My Apps → your app\n")
 
@@ -67,14 +104,16 @@ def run_setup(migrate_env: str | None = None) -> None:
 
     if app_key:
         keychain.set("schwab-api-key", app_key)
+        print(f"  ✓ App Key stored:    {_mask(app_key)}")
     if app_secret:
         keychain.set("schwab-app-secret", app_secret)
+        print(f"  ✓ App Secret stored: {_mask(app_secret)}")
     keychain.set("schwab-callback-url", callback_url)
-    print("✓ Schwab credentials stored in Keychain\n")
+    print(f"  ✓ Callback URL:      {callback_url}\n")
 
-    # Perplexity (optional)
+    # ── Perplexity (optional) ─────────────────────────────────────────────
     print("── Perplexity AI (optional) ────────────────────────")
-    print("Used for AI-powered stock news summaries. Leave blank to skip.\n")
+    print("Used for AI-assisted stock classification. Leave blank to skip.\n")
 
     perplexity_key = _prompt(
         "Perplexity API Key (leave blank to skip)",
@@ -83,11 +122,11 @@ def run_setup(migrate_env: str | None = None) -> None:
     )
     if perplexity_key:
         keychain.set("perplexity-api-key", perplexity_key)
-        print("✓ Perplexity key stored in Keychain\n")
+        print(f"  ✓ Perplexity key stored: {_mask(perplexity_key)}\n")
     else:
-        print("Skipping Perplexity.\n")
+        print("  Skipping Perplexity.\n")
 
-    # Google Sheets (optional)
+    # ── Google Sheets (optional) ──────────────────────────────────────────
     print("── Google Sheets Service Account (optional) ────────")
     print("Used for the Allocations sheet. Leave blank to skip.\n")
 
@@ -98,9 +137,33 @@ def run_setup(migrate_env: str | None = None) -> None:
     )
     if gs_creds_path:
         keychain.set("google-sheets-creds", gs_creds_path)
-        print("✓ Google Sheets credentials path stored in Keychain\n")
+        print(f"  ✓ Google Sheets path stored: {gs_creds_path}\n")
     else:
-        print("Skipping Google Sheets.\n")
+        print("  Skipping Google Sheets.\n")
 
     print("✓ Setup complete!")
     print("\nNext step: run 'portfolio auth' to authenticate with Schwab.")
+
+
+def _show_current_values() -> None:
+    """Print all currently stored Keychain values (partially masked)."""
+    fields = [
+        ("Schwab App Key",     "schwab-api-key",       True),
+        ("Schwab App Secret",  "schwab-app-secret",    True),
+        ("Callback URL",       "schwab-callback-url",  False),
+        ("Perplexity API Key", "perplexity-api-key",   True),
+        ("Google Sheets Path", "google-sheets-creds",  False),
+    ]
+
+    print("── Currently stored credentials ────────────────────\n")
+    for label, key, is_secret in fields:
+        value = keychain.get(key)
+        if value:
+            display = _mask(value) if is_secret else value
+        else:
+            display = "(not set)"
+        print(f"  {label:<22}  {display}")
+
+    print()
+    print("To update:               portfolio setup")
+    print("To re-enter visibly:     portfolio setup --show")

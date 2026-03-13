@@ -4,6 +4,8 @@ Installed as 'portfolio' via pyproject.toml [project.scripts].
 
 Commands:
     portfolio setup             Store API credentials in macOS Keychain
+    portfolio setup --verify    Show currently stored credentials (partially masked)
+    portfolio setup --show      Re-enter credentials with visible input
     portfolio auth              Authenticate with Schwab via browser
     portfolio auth --no-browser Start auth server without opening browser
     portfolio refresh           Pull latest data from all sources
@@ -61,7 +63,10 @@ def _cmd_setup(args: list[str]) -> None:
         if arg == "--migrate-env" and i + 1 < len(args):
             migrate_env = args[i + 1]
 
-    run_setup(migrate_env=migrate_env)
+    show = "--show" in args
+    verify = "--verify" in args
+
+    run_setup(migrate_env=migrate_env, show=show, verify=verify)
 
 
 def _cmd_auth(args: list[str]) -> None:
