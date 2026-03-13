@@ -539,7 +539,15 @@ def auto_classify_llm(
         log.info("LLM classified %s: %s", symbol, validated.get("asset_class", "?"))
         return validated
 
-    except Exception:
+    except Exception as exc:
+        # Re-raise 401 so the caller can disable LLM for remaining symbols
+        # with a single log message rather than 401 noise for every symbol.
+        try:
+            from httpx import HTTPStatusError
+            if isinstance(exc, HTTPStatusError) and exc.response.status_code == 401:
+                raise
+        except ImportError:
+            pass
         log.warning("Perplexity API classification failed for %s", symbol, exc_info=True)
         return None
 
@@ -666,37 +674,49 @@ def setup_dropdowns(gs_creds_path: str) -> None:
     """Install data-validation dropdowns on the Allocations worksheet.
 
     Sets column-level validation for each taxonomy dimension so the user
-    sees a dropdown selector in Google Sheets.
+    sees a dropdown selector in Google Sheets.  Uses the Sheets API
+    batchUpdate directly — pygsheets DataRange does not expose a
+    set_data_validation() method.
     """
-    import pygsheets
-
     _, ws = _get_worksheet(gs_creds_path)
 
     # Column index mapping (1-based)
     header_to_idx = {h: i + 1 for i, h in enumerate(SHEET_COLUMNS)}
 
+    requests = []
     for dim_col, values in DROPDOWN_VALUES.items():
         header = COL_TO_HEADER.get(dim_col, "")
         col_idx = header_to_idx.get(header)
         if not col_idx:
             continue
 
+        # Sheets API uses 0-based, end-exclusive indices
+        requests.append({
+            "setDataValidation": {
+                "range": {
+                    "sheetId": ws.id,
+                    "startRowIndex": 1,          # row 2 (skip header)
+                    "endRowIndex": 200,
+                    "startColumnIndex": col_idx - 1,
+                    "endColumnIndex": col_idx,
+                },
+                "rule": {
+                    "condition": {
+                        "type": "ONE_OF_LIST",
+                        "values": [{"userEnteredValue": v} for v in values],
+                    },
+                    "showCustomUi": True,
+                    "strict": False,
+                    "inputMessage": f"Select a {header} value",
+                },
+            }
+        })
+
+    if requests:
         try:
-            # Apply validation to rows 2..200 in this column
-            validation = pygsheets.datarange.DataRange(
-                start=(2, col_idx), end=(200, col_idx), worksheet=ws
-            )
-            validation.set_data_validation(
-                validation_type=pygsheets.custom_types.ValueInputOption.RAW,
-                condition_type=pygsheets.custom_types.ConditionType.ONE_OF_LIST,
-                condition_values=values,
-                showCustomUi=True,
-                strict=False,
-                inputMessage=f"Select a {header} value",
-            )
-            log.debug("Set dropdown for column %s (%d values)", header, len(values))
+            ws.spreadsheet.batch_update({"requests": requests})
         except Exception:
-            log.warning("Failed to set dropdown for %s", header, exc_info=True)
+            log.warning("Failed to install dropdown validation", exc_info=True)
 
     log.info("Dropdown validation installed on Allocations sheet")
 
@@ -744,6 +764,7 @@ def sync_and_classify(
         holdings_lookup = holdings_df.drop_duplicates("symbol").set_index("symbol")
 
         new_rows = []
+        effective_api_key = perplexity_api_key  # may be set to None on first 401
         for sym in sorted(new_symbols):
             row_data: dict[str, Any] = {"symbol": sym}
 
@@ -759,8 +780,24 @@ def sync_and_classify(
             else:
                 row_data["description"] = ""
 
-            # Auto-classify
-            classification = auto_classify(row_data, api_key=perplexity_api_key)
+            # Auto-classify — fall back to rules immediately on auth failure
+            try:
+                classification = auto_classify(row_data, api_key=effective_api_key)
+            except Exception as exc:
+                try:
+                    from httpx import HTTPStatusError
+                    if isinstance(exc, HTTPStatusError) and exc.response.status_code == 401:
+                        log.warning(
+                            "Perplexity API key is invalid or expired (401 Unauthorized). "
+                            "Switching to rule-based classification for all remaining symbols. "
+                            "Run 'portfolio setup' to update the key."
+                        )
+                        effective_api_key = None
+                        classification = auto_classify_rules(row_data)
+                    else:
+                        raise
+                except ImportError:
+                    raise exc
 
             # Build the new row
             new_row: dict[str, Any] = {
