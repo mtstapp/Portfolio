@@ -69,10 +69,15 @@ def _unlock_keychain() -> None:
 def _ensure_keychain() -> None:
     """Create and configure the portfolio Keychain if it doesn't exist yet.
 
-    Uses an empty password and disables all auto-lock settings so it stays
-    accessible in headless environments (launchd, SSH) without user interaction.
+    Also unlocks the Keychain proactively so that subsequent writes never
+    trigger a macOS password dialog (the dialog appears before the CLI can
+    return an error, so retry-after-error is too late).
     """
     if KEYCHAIN_FILE.exists():
+        # Unlock proactively every time — no-op if already unlocked, and
+        # prevents the macOS dialog that appears when writing to a locked Keychain
+        # in an interactive terminal session.
+        _unlock_keychain()
         return
 
     result = subprocess.run(
@@ -100,9 +105,11 @@ def get(key: str) -> str | None:
     """Read a secret from the portfolio Keychain.
 
     Returns None if the item is not found (errSecItemNotFound / rc=44).
-    If the Keychain is locked (e.g. after a reboot), attempts a silent
-    unlock with the empty password and retries once before raising.
+    Unlocks the Keychain proactively before reading to prevent the macOS
+    password dialog in interactive sessions.
     """
+    if KEYCHAIN_FILE.exists():
+        _unlock_keychain()
     result = subprocess.run(
         ["security", "find-generic-password",
          "-s", SERVICE, "-a", key, "-w", str(KEYCHAIN_FILE)],
