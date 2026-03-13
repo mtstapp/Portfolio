@@ -168,11 +168,11 @@ def _load_allocation_overrides(current_holdings) -> "pd.DataFrame":
     import pandas as pd
 
     gs_creds = None
-    perplexity_key = None
+    openai_key = None
     try:
         from portfolio.auth import keychain
         gs_creds = keychain.get("google-sheets-creds")
-        perplexity_key = keychain.get("perplexity-api-key")
+        openai_key = keychain.get("openai-api-key")
     except Exception:
         pass
 
@@ -186,7 +186,7 @@ def _load_allocation_overrides(current_holdings) -> "pd.DataFrame":
         overrides_df = allocations.sync_and_classify(
             holdings_df=current_holdings,
             gs_creds_path=gs_creds,
-            perplexity_api_key=perplexity_key,
+            openai_api_key=openai_key,
             setup_dropdowns_flag=True,
         )
 

@@ -16,7 +16,7 @@ Keys used:
     schwab-app-secret       Schwab client secret
     schwab-callback-url     OAuth callback URL
     schwab-token-created-at ISO timestamp when the refresh token was issued
-    perplexity-api-key      Perplexity AI API key
+    openai-api-key          OpenAI API key
     google-sheets-creds     Path to Google service account JSON file
     plaid-client-id         (Phase 2) Plaid client ID
     plaid-secret            (Phase 2) Plaid secret

@@ -446,10 +446,10 @@ def auto_classify_rules(row: dict[str, Any]) -> dict[str, str]:
 
 
 # ───────────────────────────────────────────────────────────────────────
-# LLM-assisted classification via Perplexity API
+# LLM-assisted classification via OpenAI API
 # ───────────────────────────────────────────────────────────────────────
 
-_PERPLEXITY_URL = "https://api.perplexity.ai/chat/completions"
+_OPENAI_URL = "https://api.openai.com/v1/chat/completions"
 
 
 def _build_llm_prompt(symbol: str, description: str,
@@ -480,31 +480,28 @@ def auto_classify_llm(
     api_key: str,
     extra_context: str = "",
 ) -> dict[str, str] | None:
-    """Call the Perplexity API to classify a single symbol.
+    """Call the OpenAI API to classify a single symbol.
 
     Returns a dict of dimension values, or None on failure.
     """
-    try:
-        import httpx
-    except ImportError:
-        log.warning("httpx not installed — cannot call Perplexity API")
-        return None
+    import requests as _requests
 
     prompt = _build_llm_prompt(symbol, description, security_type, extra_context)
 
     payload = {
-        "model": "sonar",
+        "model": "gpt-4o-mini",
         "messages": [
             {"role": "system", "content": "You are a financial data classifier. Respond with only valid JSON."},
             {"role": "user", "content": prompt},
         ],
+        "response_format": {"type": "json_object"},
         "temperature": 0.0,
         "max_tokens": 500,
     }
 
     try:
-        resp = httpx.post(
-            _PERPLEXITY_URL,
+        resp = _requests.post(
+            _OPENAI_URL,
             json=payload,
             headers={
                 "Authorization": f"Bearer {api_key}",
@@ -515,11 +512,6 @@ def auto_classify_llm(
         resp.raise_for_status()
         data = resp.json()
         content = data["choices"][0]["message"]["content"].strip()
-
-        # Strip markdown fences if present
-        if content.startswith("```"):
-            content = re.sub(r"^```(?:json)?\s*", "", content)
-            content = re.sub(r"\s*```$", "", content)
 
         result = json.loads(content)
 
@@ -542,13 +534,13 @@ def auto_classify_llm(
     except Exception as exc:
         # Re-raise 401 so the caller can disable LLM for remaining symbols
         # with a single log message rather than 401 noise for every symbol.
-        try:
-            from httpx import HTTPStatusError
-            if isinstance(exc, HTTPStatusError) and exc.response.status_code == 401:
-                raise
-        except ImportError:
-            pass
-        log.warning("Perplexity API classification failed for %s", symbol, exc_info=True)
+        if (
+            isinstance(exc, _requests.exceptions.HTTPError)
+            and exc.response is not None
+            and exc.response.status_code == 401
+        ):
+            raise
+        log.warning("OpenAI API classification failed for %s", symbol, exc_info=True)
         return None
 
 
@@ -728,7 +720,7 @@ def setup_dropdowns(gs_creds_path: str) -> None:
 def sync_and_classify(
     holdings_df: pd.DataFrame,
     gs_creds_path: str,
-    perplexity_api_key: str | None = None,
+    openai_api_key: str | None = None,
     setup_dropdowns_flag: bool = True,
 ) -> pd.DataFrame:
     """Main entry point: sync symbols, auto-classify new ones, write back.
@@ -744,7 +736,7 @@ def sync_and_classify(
     Args:
         holdings_df: Canonical holdings (must have symbol, description, etc.)
         gs_creds_path: Path to Google service account JSON.
-        perplexity_api_key: Optional Perplexity API key for LLM classification.
+        openai_api_key: Optional OpenAI API key for LLM classification.
         setup_dropdowns_flag: Whether to install dropdown validation.
     """
     # 1. Read current sheet
@@ -764,7 +756,7 @@ def sync_and_classify(
         holdings_lookup = holdings_df.drop_duplicates("symbol").set_index("symbol")
 
         new_rows = []
-        effective_api_key = perplexity_api_key  # may be set to None on first 401
+        effective_api_key = openai_api_key  # may be set to None on first 401
         for sym in sorted(new_symbols):
             row_data: dict[str, Any] = {"symbol": sym}
 
@@ -784,20 +776,21 @@ def sync_and_classify(
             try:
                 classification = auto_classify(row_data, api_key=effective_api_key)
             except Exception as exc:
-                try:
-                    from httpx import HTTPStatusError
-                    if isinstance(exc, HTTPStatusError) and exc.response.status_code == 401:
-                        log.warning(
-                            "Perplexity API key is invalid or expired (401 Unauthorized). "
-                            "Switching to rule-based classification for all remaining symbols. "
-                            "Run 'portfolio setup' to update the key."
-                        )
-                        effective_api_key = None
-                        classification = auto_classify_rules(row_data)
-                    else:
-                        raise
-                except ImportError:
-                    raise exc
+                import requests as _requests
+                if (
+                    isinstance(exc, _requests.exceptions.HTTPError)
+                    and exc.response is not None
+                    and exc.response.status_code == 401
+                ):
+                    log.warning(
+                        "OpenAI API key is invalid or expired (401 Unauthorized). "
+                        "Switching to rule-based classification for all remaining symbols. "
+                        "Run 'portfolio setup' to update the key."
+                    )
+                    effective_api_key = None
+                    classification = auto_classify_rules(row_data)
+                else:
+                    raise
 
             # Build the new row
             new_row: dict[str, Any] = {

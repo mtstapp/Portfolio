@@ -118,20 +118,20 @@ def run_setup(
     keychain.set("schwab-callback-url", callback_url)
     print(f"  ✓ Callback URL:      {callback_url}\n")
 
-    # ── Perplexity (optional) ─────────────────────────────────────────────
-    print("── Perplexity AI (optional) ────────────────────────")
+    # ── OpenAI (optional) ────────────────────────────────────────────────
+    print("── OpenAI API Key (optional) ────────────────────────")
     print("Used for AI-assisted stock classification. Leave blank to skip.\n")
 
-    perplexity_key = _prompt(
-        "Perplexity API Key (leave blank to skip)",
-        "PERPLEXITY_API_KEY",
-        "perplexity-api-key",
+    openai_key = _prompt(
+        "OpenAI API Key (leave blank to skip)",
+        "OPENAI_API_KEY",
+        "openai-api-key",
     )
-    if perplexity_key:
-        keychain.set("perplexity-api-key", perplexity_key)
-        print(f"  ✓ Perplexity key stored: {_mask(perplexity_key)}\n")
+    if openai_key:
+        keychain.set("openai-api-key", openai_key)
+        print(f"  ✓ OpenAI key stored: {_mask(openai_key)}\n")
     else:
-        print("  Skipping Perplexity.\n")
+        print("  Skipping OpenAI.\n")
 
     # ── Google Sheets (optional) ──────────────────────────────────────────
     print("── Google Sheets Service Account (optional) ────────")
@@ -164,7 +164,7 @@ def _show_current_values() -> None:
         ("Schwab App Key",     "schwab-api-key",       True),
         ("Schwab App Secret",  "schwab-app-secret",    True),
         ("Callback URL",       "schwab-callback-url",  False),
-        ("Perplexity API Key", "perplexity-api-key",   True),
+        ("OpenAI API Key",     "openai-api-key",        True),
         ("Google Sheets Path", "google-sheets-creds",  False),
     ]
 
