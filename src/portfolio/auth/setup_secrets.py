@@ -138,13 +138,19 @@ def run_setup(
     print("Used for the Allocations sheet. Leave blank to skip.\n")
 
     gs_creds_path = _prompt(
-        "Path to service account JSON (e.g. /Users/mark/dev/cspullFiles/CSPull438202.json)",
+        "Path to service account JSON",
         keychain_key="google-sheets-creds",
         secret=False,
     )
     if gs_creds_path:
-        keychain.set("google-sheets-creds", gs_creds_path)
-        print(f"  ✓ Google Sheets path stored: {gs_creds_path}\n")
+        # Strip stray parentheses/quotes that may be pasted from example text.
+        gs_creds_path = gs_creds_path.strip("()\"' ")
+        gs_path = Path(gs_creds_path).expanduser()
+        if not gs_path.exists():
+            print(f"  ⚠ File not found: {gs_path}")
+            print("    The path will be stored anyway — fix it later with 'portfolio setup'.")
+        keychain.set("google-sheets-creds", str(gs_path))
+        print(f"  ✓ Google Sheets path stored: {gs_path}\n")
     else:
         print("  Skipping Google Sheets.\n")
 

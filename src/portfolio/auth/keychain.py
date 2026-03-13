@@ -78,8 +78,42 @@ def _unlock_keychain() -> bool:
         return False
 
 
+def _delete_keychain() -> None:
+    """Properly remove the portfolio Keychain file AND its search-list entry.
+
+    ``security delete-keychain`` does both in one step, unlike a bare
+    ``Path.unlink()`` which leaves a dangling reference that can trigger
+    macOS password dialogs.
+    """
+    subprocess.run(
+        ["security", "delete-keychain", str(KEYCHAIN_FILE)],
+        capture_output=True,
+    )
+    # Belt-and-suspenders: if the file somehow survived, remove it.
+    if KEYCHAIN_FILE.exists():
+        KEYCHAIN_FILE.unlink()
+
+
 def _create_keychain() -> None:
-    """Create a fresh portfolio Keychain with the known password and no auto-lock."""
+    """Create a fresh portfolio Keychain with the known password and no auto-lock.
+
+    IMPORTANT: ``security create-keychain`` *replaces* the user's keychain
+    search list with only the new keychain — removing login.keychain and
+    any others.  We save the existing list first and restore it afterwards
+    (with our keychain prepended) so nothing else breaks.
+    """
+    # ── 1. Save the current search list ──────────────────────────────────
+    existing = subprocess.run(
+        ["security", "list-keychains", "-d", "user"],
+        capture_output=True, text=True,
+    )
+    prev_keychains = [
+        line.strip().strip('"')
+        for line in existing.stdout.splitlines()
+        if line.strip()
+    ]
+
+    # ── 2. Create the keychain ───────────────────────────────────────────
     result = subprocess.run(
         ["security", "create-keychain", "-p", _KEYCHAIN_PASSWORD,
          str(KEYCHAIN_FILE)],
@@ -91,6 +125,17 @@ def _create_keychain() -> None:
             f"Failed to create portfolio Keychain at {KEYCHAIN_FILE}:\n"
             f"{result.stderr.strip()}"
         )
+
+    # ── 3. Restore search list with our keychain prepended ───────────────
+    all_keychains = [str(KEYCHAIN_FILE)] + [
+        k for k in prev_keychains if k != str(KEYCHAIN_FILE)
+    ]
+    subprocess.run(
+        ["security", "list-keychains", "-d", "user", "-s"] + all_keychains,
+        capture_output=True,
+    )
+
+    # ── 4. Disable auto-lock and unlock ──────────────────────────────────
     # -t 0 = no auto-lock timeout; omitting -l = don't lock on sleep
     subprocess.run(
         ["security", "set-keychain-settings", "-t", "0", str(KEYCHAIN_FILE)],
@@ -113,8 +158,8 @@ def _ensure_keychain() -> None:
         if _unlock_keychain():
             return  # Exists and successfully unlocked — done.
         # Unlock failed (wrong password, dialog timeout, or corrupted file).
-        # Delete and recreate so the password dialog never appears.
-        KEYCHAIN_FILE.unlink()
+        # Properly delete (removes from search list too) and recreate.
+        _delete_keychain()
 
     _create_keychain()
 
@@ -124,9 +169,10 @@ def reset() -> None:
 
     Called at the start of ``portfolio setup`` to guarantee a clean state
     and prevent any macOS password dialogs from a stale Keychain file.
+    Uses ``security delete-keychain`` so the old entry is also removed from
+    the macOS keychain search list.
     """
-    if KEYCHAIN_FILE.exists():
-        KEYCHAIN_FILE.unlink()
+    _delete_keychain()
     _create_keychain()
 
 
