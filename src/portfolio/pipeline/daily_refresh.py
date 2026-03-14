@@ -118,27 +118,27 @@ def run(force: bool = False, skip_sector: bool = False) -> dict:
     canonical_accounts = transforms.schwab_accounts_to_canonical(accounts_df, today)
     canonical_transactions = transforms.schwab_transactions_to_canonical(transactions_df)
 
-    # 4. Load allocation overrides (Google Sheet) — uses new allocations module
-    overrides_df = _load_allocation_overrides(canonical_holdings)
-
-    # 5. Merge overrides into holdings
-    if not overrides_df.empty:
-        canonical_holdings = transforms.apply_allocation_overrides(
-            canonical_holdings, overrides_df
-        )
-
-    # 5b. Derive account tax treatment (Dimension 11)
-    canonical_holdings = transforms.apply_tax_treatment(canonical_holdings)
-
-    # 6. Write canonical layers
+    # 4. Write canonical layers (Schwab-only snapshot before ML merge)
     writer.write_canonical(canonical_holdings, "holdings", today, snapshot=True)
     writer.write_canonical(canonical_accounts, "accounts")
 
     # Append transactions to the unified history
     _append_transactions(canonical_transactions)
 
-    # 7. Merge latest ML Benefits import (if available)
+    # 5. Merge latest ML Benefits import (if available)
     canonical_holdings = _merge_ml_benefits(canonical_holdings, today)
+
+    # 6. Load allocation overrides (Google Sheet) — after ML merge so all symbols present
+    overrides_df = _load_allocation_overrides(canonical_holdings)
+
+    # 7. Merge overrides into holdings
+    if not overrides_df.empty:
+        canonical_holdings = transforms.apply_allocation_overrides(
+            canonical_holdings, overrides_df
+        )
+
+    # 7b. Derive account tax treatment (Dimension 11)
+    canonical_holdings = transforms.apply_tax_treatment(canonical_holdings)
 
     # 8. Compute metrics from final merged holdings
     _compute_metrics(canonical_holdings)
